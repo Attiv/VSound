@@ -14,13 +14,14 @@ enum Theme {
 
 struct QuietButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
     var prominent = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(prominent ? Theme.sidebar : Color.primary)
             .padding(.horizontal, 17).padding(.vertical, 10)
             .background(prominent ? Theme.accent : Theme.elevated, in: RoundedRectangle(cornerRadius: 10))
-            .opacity(configuration.isPressed ? 0.78 : 1)
+            .opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.78 : 1)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }

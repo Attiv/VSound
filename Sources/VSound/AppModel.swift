@@ -34,6 +34,7 @@ final class AppModel {
     var selectedGroup: String?
     var search = ""
     var showInspector = true
+    var settingsTab = "general"
     var inspectorTab = "lyrics"
     var isImporting = false
     var importCount = 0
@@ -42,6 +43,7 @@ final class AppModel {
     var unavailableFolders: Set<UUID> = []
     let player = AudioPlayer()
     let lyrics: LyricsModel
+    let cloud: CloudModel
     let shortcuts = HotKeyManager()
     @ObservationIgnored private let store: StateStore
     @ObservationIgnored private let scanner: LibraryScanner
@@ -57,6 +59,7 @@ final class AppModel {
         self.store = store
         scanner = LibraryScanner(artworkDirectory: store.artworkDirectory)
         lyrics = LyricsModel(client: LyricsClient(directory: store.lyricsDirectory))
+        cloud = CloudModel(directory: store.cloudMusicDirectory)
         do {
             let state = try store.load()
             tracks = state.tracks; folders = state.folders; favorites = state.favorites
@@ -99,6 +102,10 @@ final class AppModel {
             }
         }
         AppDelegate.model = self
+        cloud.onImport = { [weak self] result in
+            guard let self else { throw CancellationError() }
+            try await self.importCloudFolder(result)
+        }
     }
 
     deinit { saveTimer?.invalidate() }
@@ -108,7 +115,7 @@ final class AppModel {
         EQPreset.builtIn.first { $0.id == equalizer.presetID }?.name
             ?? customPresets.first { $0.id == equalizer.presetID }?.name ?? "自定义"
     }
-    var folderTitle: String? { folders.first { $0.id == selectedFolderID }?.url.lastPathComponent }
+    var folderTitle: String? { folders.first { $0.id == selectedFolderID }?.name }
     var visibleTracks: [Track] {
         var result = tracks
         if let selectedFolderID, let folder = folders.first(where: { $0.id == selectedFolderID }) {
@@ -161,37 +168,17 @@ final class AppModel {
                 defer { if access && !keptScope { url.stopAccessingSecurityScopedResource() } }
                 do {
                     let folder: LibraryFolder
-                    let bookmark = try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
-                    folder = LibraryFolder(id: existingFolder?.id ?? UUID(), url: url, bookmark: bookmark)
-                    let prior = self.tracks
-                    let base = added
-                    let result = try await self.scanner.scan(folder, existing: prior) { count in
-                        await MainActor.run { self.importCount = base + count }
-                    }
-                    try Task.checkCancellation()
-                    if existingFolder != nil {
-                        // Keep entries under unreadable subfolders instead of silently deleting them.
-                        if result.skipped.isEmpty { self.tracks.removeAll { $0.folderID == folder.id } }
-                        else {
-                            let scanned = Set(result.tracks.map(\.id))
-                            self.tracks.removeAll { $0.folderID == folder.id && scanned.contains($0.id) }
-                        }
-                    }
-                    var seen = Set(self.tracks.map(\.id))
-                    let fresh = result.tracks.filter { seen.insert($0.id).inserted }
-                    self.tracks.append(contentsOf: fresh)
-                    if existingFolder == nil {
-                        self.folders.append(folder)
-                    } else if let index = self.folders.firstIndex(where: { $0.id == folder.id }) {
-                        self.folders[index] = folder
-                    }
+                    let managed = existingFolder?.sourceProvider != nil && self.isManagedCloudURL(url)
+                    let bookmark = managed ? nil : try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
+                    folder = LibraryFolder(id: existingFolder?.id ?? UUID(), url: url, bookmark: bookmark,
+                                           displayName: existingFolder?.displayName, sourceProvider: existingFolder?.sourceProvider)
+                    let result = try await self.indexFolder(folder, progressBase: added)
                     if access {
                         if let old = self.scopedURLs.updateValue(url, forKey: folder.id) { old.stopAccessingSecurityScopedResource() }
                         keptScope = true
                     }
                     self.unavailableFolders.remove(folder.id)
-                    added += fresh.count; warnings.append(contentsOf: result.skipped)
-                    self.queue.retain(Set(self.tracks.map(\.id)))
+                    added += result.added; warnings.append(contentsOf: result.skipped)
                     self.scheduleSave()
                 } catch is CancellationError { break }
                 catch { warnings.append("\(url.lastPathComponent)：\(error.localizedDescription)") }
@@ -206,6 +193,49 @@ final class AppModel {
 
     func cancelImport() { importTask?.cancel() }
     func refreshLibrary() { importFolders(folders.map(\.url), refreshing: true) }
+
+    private func indexFolder(_ folder: LibraryFolder, progressBase: Int = 0) async throws -> (added: Int, skipped: [String]) {
+        let result = try await scanner.scan(folder, existing: tracks) { count in
+            await MainActor.run { self.importCount = progressBase + count }
+        }
+        try Task.checkCancellation()
+        if folders.contains(where: { $0.id == folder.id }) {
+            // Preserve previous entries when a partial scan cannot read every subfolder.
+            if result.skipped.isEmpty { tracks.removeAll { $0.folderID == folder.id } }
+            else {
+                let scanned = Set(result.tracks.map(\.id))
+                tracks.removeAll { $0.folderID == folder.id && scanned.contains($0.id) }
+            }
+        }
+        var seen = Set(tracks.map(\.id))
+        let fresh = result.tracks.filter { seen.insert($0.id).inserted }
+        tracks.append(contentsOf: fresh)
+        if let index = folders.firstIndex(where: { $0.id == folder.id }) { folders[index] = folder }
+        else { folders.append(folder) }
+        queue.retain(Set(tracks.map(\.id)))
+        if queue.currentID == nil, player.loadedID != nil { player.stop(); lyrics.clear() }
+        return (fresh.count, result.skipped)
+    }
+
+    private func importCloudFolder(_ result: CloudImportResult) async throws {
+        guard !isImporting else {
+            throw NSError(domain: "VSound", code: 1, userInfo: [NSLocalizedDescriptionKey: "曲库正在扫描，请完成后重新导入；完整下载会复用缓存。"])
+        }
+        guard isManagedCloudURL(result.directory) else { throw CloudError.cacheDamaged }
+        isImporting = true; importCount = 0
+        defer { isImporting = false }
+        let existing = folders.first { $0.url.standardizedFileURL == result.directory.standardizedFileURL }
+        let folder = LibraryFolder(id: existing?.id ?? UUID(), url: result.directory,
+                                   displayName: result.displayName, sourceProvider: result.provider.rawValue)
+        let scan = try await indexFolder(folder)
+        notice = "已将 \(result.displayName) 加入曲库。"
+        if !scan.skipped.isEmpty { error = scan.skipped.prefix(5).joined(separator: "\n") }
+        scheduleSave(); remote?.update()
+    }
+
+    private func isManagedCloudURL(_ url: URL) -> Bool {
+        Self.isInside(url.resolvingSymlinksInPath(), folder: store.cloudMusicDirectory.resolvingSymlinksInPath())
+    }
 
     func removeFolder(_ folder: LibraryFolder) {
         guard !isImporting else { return }
@@ -361,6 +391,10 @@ final class AppModel {
 
     private func restoreFolderAccess() {
         for index in folders.indices {
+            if folders[index].sourceProvider != nil, isManagedCloudURL(folders[index].url) {
+                if !FileManager.default.isReadableFile(atPath: folders[index].url.path) { unavailableFolders.insert(folders[index].id) }
+                continue
+            }
             guard let data = folders[index].bookmark else { unavailableFolders.insert(folders[index].id); continue }
             do {
                 var stale = false

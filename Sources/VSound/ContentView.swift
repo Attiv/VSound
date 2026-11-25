@@ -34,6 +34,8 @@ struct ContentView: View {
                         .help("添加音乐文件夹 · ⌘O").disabled(model.isImporting)
                     Button { openWindow(id: "equalizer") } label: { Label("均衡器", systemImage: "slider.horizontal.3") }
                         .help("均衡器 · ⌘E")
+                    Button { openWindow(id: "cloud") } label: { Label("网盘音乐", systemImage: "icloud.and.arrow.down") }
+                        .help("浏览 Google Drive 与 Dropbox 音乐")
                     Button {
                         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) { model.showInspector.toggle() }
                     } label: { Label("歌词与队列", systemImage: "sidebar.right") }
@@ -112,8 +114,8 @@ struct ContentView: View {
                 }
                 Section("音乐文件夹") {
                     ForEach(model.folders) { folder in
-                        Label { Text(folder.url.lastPathComponent) } icon: {
-                            Image(systemName: model.unavailableFolders.contains(folder.id) ? "folder.badge.questionmark" : "folder")
+                        Label { Text(folder.name) } icon: {
+                            Image(systemName: model.unavailableFolders.contains(folder.id) ? "folder.badge.questionmark" : folder.sourceProvider != nil ? "icloud" : "folder")
                                 .foregroundStyle(.secondary)
                         }
                             .lineLimit(1).padding(.vertical, 5).tag(SidebarSelection.folder(folder.id))
@@ -127,6 +129,13 @@ struct ContentView: View {
                     }
                     Button(action: model.chooseFolders) { Label("添加文件夹", systemImage: "plus") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).padding(.vertical, 5).disabled(model.isImporting)
+                }
+                Section("在线来源") {
+                    ForEach(CloudProvider.allCases) { provider in
+                        Button { model.cloud.browse(provider); openWindow(id: "cloud") } label: {
+                            Label(provider.title, systemImage: "icloud").font(.system(size: 12))
+                        }.buttonStyle(.plain).padding(.vertical, 5)
+                    }
                 }
             }
             .listStyle(.sidebar).scrollContentBackground(.hidden)

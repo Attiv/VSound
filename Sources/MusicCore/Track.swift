@@ -37,8 +37,12 @@ public struct LibraryFolder: Identifiable, Codable, Sendable {
     public var id: UUID
     public var url: URL
     public var bookmark: Data?
-    public init(id: UUID = UUID(), url: URL, bookmark: Data? = nil) {
+    public var displayName: String?
+    public var sourceProvider: String?
+    public var name: String { displayName ?? url.lastPathComponent }
+    public init(id: UUID = UUID(), url: URL, bookmark: Data? = nil, displayName: String? = nil, sourceProvider: String? = nil) {
         self.id = id; self.url = url; self.bookmark = bookmark
+        self.displayName = displayName; self.sourceProvider = sourceProvider
     }
 }
 

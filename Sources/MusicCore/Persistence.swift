@@ -31,6 +31,7 @@ public struct StateStore: Sendable {
     public var stateURL: URL { directory.appendingPathComponent("library.json") }
     public var artworkDirectory: URL { directory.appendingPathComponent("Artwork", isDirectory: true) }
     public var lyricsDirectory: URL { directory.appendingPathComponent("Lyrics", isDirectory: true) }
+    public var cloudMusicDirectory: URL { directory.appendingPathComponent("CloudMusic", isDirectory: true) }
 
     public init(directory: URL? = nil) {
         // Keep the original storage location so rebranding never resets an existing library.

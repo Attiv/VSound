@@ -27,6 +27,10 @@ struct VSoundApp: App {
         }
         .defaultSize(width: 420, height: 140)
         .windowResizability(.contentSize)
+        Window("网盘音乐", id: "cloud") {
+            CloudBrowserView().environment(model).preferredColorScheme(.dark).tint(Theme.accent)
+        }
+        .defaultSize(width: 900, height: 670)
         Settings {
             SettingsView().environment(model).preferredColorScheme(.dark).tint(Theme.accent)
         }
@@ -68,6 +72,7 @@ struct MusicCommands: Commands {
             Button("音乐曲库") { openWindow(id: "main") }.keyboardShortcut("1")
             Button("均衡器") { openWindow(id: "equalizer") }.keyboardShortcut("e")
             Button("迷你播放器") { openWindow(id: "mini") }.keyboardShortcut("m", modifiers: [.command, .shift])
+            Button("网盘音乐") { openWindow(id: "cloud") }.keyboardShortcut("d", modifiers: [.command, .shift])
             Button("显示 / 隐藏歌词与队列") { model.showInspector.toggle() }.keyboardShortcut("l", modifiers: [.command, .shift])
         }
     }

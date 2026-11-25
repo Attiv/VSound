@@ -5,9 +5,11 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
-        TabView {
-            general.tabItem { Label("通用", systemImage: "gearshape") }
-            shortcuts.tabItem { Label("快捷键", systemImage: "keyboard") }
+        @Bindable var model = model
+        TabView(selection: $model.settingsTab) {
+            general.tabItem { Label("通用", systemImage: "gearshape") }.tag("general")
+            shortcuts.tabItem { Label("快捷键", systemImage: "keyboard") }.tag("shortcuts")
+            CloudSettingsView().tabItem { Label("网盘", systemImage: "icloud") }.tag("cloud")
         }.frame(width: 590, height: 480)
     }
     private var general: some View {

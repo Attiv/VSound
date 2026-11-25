@@ -28,5 +28,9 @@
 	<string>Copyright © 2026 VSound</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>VSoundDropboxAppKey</key>
+	<string>$(VSOUND_DROPBOX_APP_KEY)</string>
+	<key>VSoundGoogleClientID</key>
+	<string>$(VSOUND_GOOGLE_CLIENT_ID)</string>
 </dict>
 </plist>

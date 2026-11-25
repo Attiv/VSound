@@ -43,12 +43,15 @@ targets:
         NSHumanReadableCopyright: Copyright © 2026 VSound
         NSHighResolutionCapable: true
         NSPrincipalClass: NSApplication
+        VSoundGoogleClientID: $(VSOUND_GOOGLE_CLIENT_ID)
+        VSoundDropboxAppKey: $(VSOUND_DROPBOX_APP_KEY)
     entitlements:
       path: Resources/VSound.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.files.user-selected.read-write: true
         com.apple.security.network.client: true
+        com.apple.security.network.server: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.localmusic.player
