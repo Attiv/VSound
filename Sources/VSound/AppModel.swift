@@ -29,6 +29,24 @@ final class AppModel {
     var lyricsOffsets: [String: Double] = [:]
     var hotKeys: [String: HotKeyBinding] = [:]
     var hotKeysEnabled = true
+    var playlists: [MusicPlaylist] = []
+    var preferences = PlayerPreferences()
+    var loudnessRecords: [String: LoudnessRecord] = [:]
+    var selectedPlaylistID: UUID?
+    var isAnalyzing = false
+    var analysisProgress = 0
+    var analysisStatus: String?
+    var isCheckingUpdates = false
+    var updateStatus: String?
+    var availableUpdate: ReleaseUpdate?
+    let outputs = OutputDevices()
+    let desktopLyrics = DesktopLyricsController()
+    @ObservationIgnored var watcher: LibraryWatcher?
+    @ObservationIgnored var needsRescan = false
+    @ObservationIgnored var analysisTask: Task<Void, Never>?
+    @ObservationIgnored var updateTask: Task<Void, Never>?
+    @ObservationIgnored var preparedQueue: PlaybackQueue?
+    @ObservationIgnored var profileUID: String?
     var page: LibraryPage = .songs
     var selectedFolderID: UUID?
     var selectedGroup: String?
@@ -68,10 +86,13 @@ final class AppModel {
             volume = state.volume.isFinite ? min(1, max(0, state.volume)) : 0.7
             onlineLyrics = state.onlineLyrics; lyricsOffsets = state.lyricsOffsets
             hotKeys = state.hotKeys; hotKeysEnabled = state.hotKeysEnabled
+            playlists = state.playlists ?? []; preferences = state.preferences ?? PlayerPreferences()
+            loudnessRecords = state.loudnessRecords ?? [:]
+            lyrics.sources = preferences.lyricSources
             restoreFolderAccess()
             queue.retain(Set(tracks.map(\.id)))
             if let track = currentTrack, FileManager.default.fileExists(atPath: track.url.path) {
-                try? player.load(track, at: state.position, autoplay: false)
+                try? player.load(track, at: state.position, autoplay: false, gain: loudnessGain(track))
                 lyrics.load(track, online: onlineLyrics)
             }
         } catch {
@@ -86,6 +107,10 @@ final class AppModel {
         player.apply(equalizer)
         player.setVolume(volume)
         player.onEnded = { [weak self] in self?.next(automatic: true) }
+        player.onAdvanced = { [weak self] id in
+            guard let self, let prepared = self.preparedQueue, prepared.currentID == id else { return }
+            self.queue = prepared; self.didStartCurrent(); self.syncUpcoming()
+        }
         player.onStateChanged = { [weak self] in
             self?.remote?.update()
             self?.scheduleSave()
@@ -106,6 +131,7 @@ final class AppModel {
             guard let self else { throw CancellationError() }
             try await self.importCloudFolder(result)
         }
+        configureEnhancements()
     }
 
     deinit { saveTimer?.invalidate() }
@@ -118,7 +144,10 @@ final class AppModel {
     var folderTitle: String? { folders.first { $0.id == selectedFolderID }?.name }
     var visibleTracks: [Track] {
         var result = tracks
-        if let selectedFolderID, let folder = folders.first(where: { $0.id == selectedFolderID }) {
+        if let playlist = selectedPlaylist {
+            let lookup = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            result = playlist.trackIDs.compactMap { lookup[$0] }
+        } else if let selectedFolderID, let folder = folders.first(where: { $0.id == selectedFolderID }) {
             result = result.filter { Self.isInside($0.url, folder: folder.url) }
         } else if page == .favorites { result = result.filter { favorites.contains($0.id) } }
         else if page == .recent {
@@ -129,7 +158,7 @@ final class AppModel {
             result = result.filter { page == .albums ? $0.albumID == selectedGroup : $0.artist == selectedGroup }
         }
         if !search.isEmpty { result = result.filter { $0.matches(search) } }
-        if page != .recent {
+        if page != .recent, selectedPlaylistID == nil {
             result.sort {
                 if selectedGroup != nil, $0.trackNumber != $1.trackNumber { return $0.trackNumber < $1.trackNumber }
                 return $0.title.localizedStandardCompare($1.title) == .orderedAscending
@@ -139,7 +168,7 @@ final class AppModel {
     }
 
     func navigate(_ page: LibraryPage, folderID: UUID? = nil) {
-        self.page = page; selectedFolderID = folderID; selectedGroup = nil; search = ""
+        self.page = page; selectedFolderID = folderID; selectedPlaylistID = nil; selectedGroup = nil; search = ""
     }
 
     func chooseFolders() {
@@ -157,7 +186,10 @@ final class AppModel {
         isImporting = true; importCount = 0
         importTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.isImporting = false; self.importTask = nil }
+            defer {
+                self.isImporting = false; self.importTask = nil; self.configureWatcher()
+                if self.needsRescan { self.needsRescan = false; self.refreshLibrary() }
+            }
             var added = 0, warnings: [String] = []
             for url in directories {
                 if Task.isCancelled { break }
@@ -213,6 +245,7 @@ final class AppModel {
         if let index = folders.firstIndex(where: { $0.id == folder.id }) { folders[index] = folder }
         else { folders.append(folder) }
         queue.retain(Set(tracks.map(\.id)))
+        syncUpcoming()
         if queue.currentID == nil, player.loadedID != nil { player.stop(); lyrics.clear() }
         return (fresh.count, result.skipped)
     }
@@ -247,6 +280,7 @@ final class AppModel {
         if let url = scopedURLs.removeValue(forKey: folder.id) { url.stopAccessingSecurityScopedResource() }
         unavailableFolders.remove(folder.id)
         queue.retain(Set(tracks.map(\.id)))
+        syncUpcoming(); configureWatcher()
         if queue.currentID == nil { player.stop(); lyrics.clear() }
         if selectedFolderID == folder.id { navigate(.songs) }
         notice = "已从曲库移除文件夹，原始音乐文件保持不变。"
@@ -254,6 +288,7 @@ final class AppModel {
     }
 
     func play(_ track: Track, in list: [Track]? = nil) {
+        if let cleaning = cloud.cleaningDirectory, Self.isInside(track.url, folder: cleaning) { notice = "这份缓存正在清理，请稍后再播放。"; return }
         queue.start(track.id, in: (list ?? visibleTracks).map(\.id))
         loadCurrent()
     }
@@ -261,11 +296,8 @@ final class AppModel {
     private func loadCurrent() {
         guard let track = currentTrack else { return }
         do {
-            try player.load(track)
-            recentIDs.removeAll { $0 == track.id }; recentIDs.insert(track.id, at: 0)
-            recentIDs = Array(recentIDs.prefix(200))
-            lyrics.load(track, online: onlineLyrics)
-            scheduleSave(); remote?.update()
+            try player.load(track, gain: loudnessGain(track))
+            didStartCurrent(); syncUpcoming()
         } catch { self.error = "无法播放「\(track.title)」：\(error.localizedDescription)\n请确认文件仍在原位置，或重新授权音乐文件夹。" }
     }
 
@@ -291,13 +323,13 @@ final class AppModel {
         do { try player.seek(to: seconds) } catch { self.error = error.localizedDescription }
         scheduleSave()
     }
-    func setVolume(_ value: Float) { volume = min(1, max(0, value)); player.setVolume(volume); scheduleSave() }
+    func setVolume(_ value: Float) { volume = value.isFinite ? min(1, max(0, value)) : 0.7; player.setVolume(volume); saveDeviceProfile(); scheduleSave() }
     func toggleFavorite(_ track: Track) {
         if !favorites.insert(track.id).inserted { favorites.remove(track.id) }
         scheduleSave()
     }
-    func toggleShuffle() { queue.toggleShuffle(); scheduleSave(); remote?.update() }
-    func cycleRepeat() { queue.repeatMode.cycle(); scheduleSave(); remote?.update() }
+    func toggleShuffle() { queue.toggleShuffle(); syncUpcoming(); scheduleSave(); remote?.update() }
+    func cycleRepeat() { queue.repeatMode.cycle(); syncUpcoming(); scheduleSave(); remote?.update() }
     func shufflePlay(_ list: [Track]) {
         guard let first = list.randomElement() else { return }
         if !queue.isShuffled { queue.toggleShuffle() }
@@ -305,10 +337,11 @@ final class AppModel {
     }
     func enqueue(_ track: Track, next: Bool) {
         if next { queue.playNext(track.id) } else { queue.append(track.id) }
+        syncUpcoming()
         notice = next ? "已设为下一首播放。" : "已添加到播放队列。"
         scheduleSave()
     }
-    func removeFromQueue(_ id: String) { queue.removeUpcoming(id); scheduleSave() }
+    func removeFromQueue(_ id: String) { queue.removeUpcoming(id); syncUpcoming(); scheduleSave() }
 
     func choosePreset(id: String, gains: [Float]) {
         equalizer.presetID = id; equalizer.gains = gains; equalizer.enabled = true
@@ -319,7 +352,7 @@ final class AppModel {
         equalizer.gains[index] = gain; equalizer.presetID = "custom"
         updateEQ()
     }
-    func updateEQ() { equalizer.normalize(); player.apply(equalizer); scheduleSave() }
+    func updateEQ() { equalizer.normalize(); player.apply(equalizer); saveDeviceProfile(); scheduleSave() }
     func savePreset(_ name: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
@@ -374,6 +407,7 @@ final class AppModel {
         state.volume = volume; state.equalizer = equalizer; state.customPresets = customPresets
         state.onlineLyrics = onlineLyrics; state.lyricsOffsets = lyricsOffsets
         state.hotKeys = hotKeys; state.hotKeysEnabled = hotKeysEnabled
+        state.playlists = playlists; state.preferences = preferences; state.loudnessRecords = loudnessRecords
         let store = store
         let snapshot = state
         if synchronously {

@@ -39,9 +39,17 @@ public struct LyricsDocument: Codable, Equatable, Sendable {
                 parsed.append((max(0, minutes * 60 + seconds + fraction + offset), content))
             }
         }
-        lines = parsed.enumerated().sorted {
+        let ordered = parsed.enumerated().sorted {
             $0.element.0 == $1.element.0 ? $0.offset < $1.offset : $0.element.0 < $1.element.0
-        }.enumerated().map { LyricLine(id: $0.offset, time: $0.element.element.0, text: $0.element.element.1) }
+        }
+        lines = []
+        for item in ordered {
+            if let last = lines.last, abs(last.time - item.element.0) < 0.001 {
+                if !item.element.1.isEmpty, !last.text.components(separatedBy: "\n").contains(item.element.1) {
+                    lines[lines.count - 1].text += (last.text.isEmpty ? "" : "\n") + item.element.1
+                }
+            } else { lines.append(LyricLine(id: lines.count, time: item.element.0, text: item.element.1)) }
+        }
         plainText = lines.isEmpty ? text.trimmingCharacters(in: .whitespacesAndNewlines)
             : lines.map(\.text).joined(separator: "\n")
     }

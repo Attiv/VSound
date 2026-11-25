@@ -20,6 +20,14 @@ final class CloudModel {
     var total = 0
     var status: String?
     var error: String?
+    var jobs: [CloudDownloadJob] = []
+    var cacheEntries: [CloudCacheEntry] = []
+    var isReadingCache = false
+    var cleaningDirectory: URL?
+    @ObservationIgnored var canRemoveCache: ((URL) -> Bool)?
+    @ObservationIgnored var onCacheRemoved: ((URL) -> Void)?
+    @ObservationIgnored private let cache: CloudCacheStore
+    @ObservationIgnored private let historyURL: URL
     @ObservationIgnored var onImport: ((CloudImportResult) async throws -> Void)?
     @ObservationIgnored private let client: CloudClient
     @ObservationIgnored private let importer: CloudMusicImporter
@@ -32,6 +40,16 @@ final class CloudModel {
         let client = CloudClient()
         self.client = client
         importer = CloudMusicImporter(client: client, directory: directory)
+        cache = CloudCacheStore(directory: directory)
+        historyURL = directory.appendingPathComponent("download-history.json")
+        if let data = try? Data(contentsOf: historyURL), data.count < 1_000_000,
+           let saved = try? JSONDecoder().decode([CloudDownloadJob].self, from: data) {
+            jobs = Array(saved.prefix(50)).map { item in
+                var job = item
+                if job.state == .running { job.state = .cancelled; job.message = "上次下载已中断，完整缓存可重试复用。" }
+                return job
+            }
+        }
         for provider in CloudProvider.allCases {
             let key = provider == .googleDrive ? "VSoundGoogleClientID" : "VSoundDropboxAppKey"
             clientIDs[provider] = UserDefaults.standard.string(forKey: "cloud.clientID.\(provider.rawValue)")
@@ -49,7 +67,7 @@ final class CloudModel {
     var visibleItems: [CloudItem] {
         items.filter { ($0.isFolder || $0.isAudio || $0.isLyric) && (search.isEmpty || $0.name.localizedStandardContains(search)) }
     }
-    var isBusy: Bool { isConnecting || isDownloading }
+    var isBusy: Bool { isConnecting || isDownloading || cleaningDirectory != nil }
 
     func setClientID(_ value: String, provider: CloudProvider) {
         clientIDs[provider] = String(value.prefix(2048))
@@ -128,24 +146,76 @@ final class CloudModel {
 
     func importCurrentFolder() {
         guard !isBusy, !isLoading, connected.contains(provider) else { return }
-        let selectedProvider = provider, folder = currentFolder
+        startImport(provider, folder: currentFolder)
+    }
+
+    func retry(_ job: CloudDownloadJob) {
+        guard !isBusy, connected.contains(job.provider) else { error = "请先连接对应网盘，等待当前任务完成后再重试。"; return }
+        startImport(job.provider, folder: job.folder)
+    }
+
+    private func startImport(_ selectedProvider: CloudProvider, folder: CloudItem) {
+        let job = CloudDownloadJob(provider: selectedProvider, folder: folder)
+        jobs.insert(job, at: 0); jobs = Array(jobs.prefix(50)); saveJobs()
         isDownloading = true; error = nil; completed = 0; total = 0
         status = "正在读取网盘音乐…"
         downloading = Task { [weak self, importer] in
             guard let self else { return }
-            defer { self.isDownloading = false }
+            defer { self.isDownloading = false; self.saveJobs(); self.reloadCache() }
             do {
                 let result = try await importer.importFolder(folder, provider: selectedProvider) { progress in
                     await MainActor.run {
                         self.completed = progress.completed; self.total = progress.total; self.status = progress.message
+                        if let index = self.jobs.firstIndex(where: { $0.id == job.id }) {
+                            self.jobs[index].completed = progress.completed; self.jobs[index].total = progress.total; self.jobs[index].message = progress.message
+                        }
                     }
                 }
                 try Task.checkCancellation()
                 try await self.onImport?(result)
                 self.status = "已下载 \(result.downloaded) 首，复用缓存 \(result.reused) 首，已加入曲库。"
+                self.finishJob(job.id, state: .completed, message: self.status ?? "已完成")
                 if !result.warnings.isEmpty { self.error = result.warnings.prefix(5).joined(separator: "\n") }
-            } catch is CancellationError { self.status = "已停止下载，完整缓存可在下次继续复用。" }
-            catch { self.error = error.localizedDescription; self.status = nil }
+            } catch is CancellationError {
+                self.status = "已停止下载，完整缓存可在下次继续复用。"
+                self.finishJob(job.id, state: .cancelled, message: self.status ?? "已停止")
+            }
+            catch {
+                self.error = error.localizedDescription; self.status = nil
+                self.finishJob(job.id, state: .failed, message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func finishJob(_ id: UUID, state: CloudDownloadState, message: String) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].state = state; jobs[index].message = message
+    }
+    private func saveJobs() {
+        do {
+            try FileManager.default.createDirectory(at: historyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(jobs).write(to: historyURL, options: .atomic)
+        } catch { self.error = "无法保存下载记录：\(error.localizedDescription)" }
+    }
+    func reloadCache() {
+        guard !isReadingCache else { return }
+        isReadingCache = true
+        Task { [weak self, cache] in
+            defer { self?.isReadingCache = false }
+            do { self?.cacheEntries = try await cache.entries() }
+            catch { self?.error = "读取缓存失败：\(error.localizedDescription)" }
+        }
+    }
+    func removeCache(_ entry: CloudCacheEntry) {
+        guard !isBusy, canRemoveCache?(entry.directory) == true else { error = "缓存正在使用或曲库正在扫描，请先切换到其他音乐再清理。"; return }
+        cleaningDirectory = entry.directory
+        Task { [weak self, cache] in
+            defer { self?.cleaningDirectory = nil }
+            do {
+                try await cache.remove(entry.directory)
+                self?.onCacheRemoved?(entry.directory); self?.reloadCache()
+                self?.status = "已清理 \(entry.name)，远端文件不受影响。"
+            } catch { self?.error = "清理失败：\(error.localizedDescription)" }
         }
     }
 }

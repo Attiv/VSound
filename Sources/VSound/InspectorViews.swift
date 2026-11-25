@@ -185,7 +185,7 @@ struct LyricsSearchView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("找到这一首的歌词").font(.system(size: 21, weight: .semibold))
-                    Text("搜索会将输入的歌名和歌手发送给 LRCLIB，不上传音乐文件。")
+                    Text("从已启用的来源搜索，选择对应歌手和版本，不上传音乐文件。")
                         .font(.system(size: 11)).foregroundStyle(Theme.muted)
                 }
                 Spacer()
@@ -195,11 +195,13 @@ struct LyricsSearchView: View {
                 TextField("歌名或歌手", text: $lyrics.searchQuery).textFieldStyle(.roundedBorder).onSubmit(lyrics.searchOnline)
                 Button("搜索", action: lyrics.searchOnline).disabled(lyrics.isSearching || lyrics.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            Text("来源：" + lyrics.sources.map(\.title).joined(separator: " · ")).font(.system(size: 10)).foregroundStyle(.secondary)
+            if lyrics.isResolving { ProgressView("正在获取歌词…").font(.system(size: 11)) }
             if lyrics.isSearching { ProgressView().controlSize(.small).frame(maxWidth: .infinity) }
             if let message = lyrics.searchMessage { Text(message).font(.system(size: 12)).foregroundStyle(Theme.muted) }
-            List(lyrics.candidates) { candidate in
+            List(lyrics.candidates, id: \.identity) { candidate in
                 Button {
-                    lyrics.choose(candidate); dismiss()
+                    lyrics.choose(candidate) { dismiss() }
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 6) {
@@ -207,10 +209,11 @@ struct LyricsSearchView: View {
                             Text("\(candidate.artistName) · \(candidate.albumName)").font(.system(size: 10)).foregroundStyle(Theme.muted).lineLimit(1)
                         }
                         Spacer()
-                        Text(candidate.document?.isSynced == true ? "逐行" : "文本").font(.system(size: 9)).foregroundStyle(Theme.accent)
+                        Text((candidate.origin ?? .lrclib).title).font(.system(size: 9)).foregroundStyle(Theme.accent)
+                        Text(candidate.document?.isSynced == true ? "逐行" : candidate.remoteKey == nil ? "文本" : "获取").font(.system(size: 9)).foregroundStyle(.secondary)
                         Text(MusicFormatting.time(candidate.duration)).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.muted)
                     }.padding(.vertical, 6).contentShape(Rectangle())
-                }.buttonStyle(.plain)
+                }.buttonStyle(.plain).disabled(lyrics.isResolving)
             }.listStyle(.inset).scrollContentBackground(.hidden)
         }.padding(26).frame(width: 590, height: 450).background(Theme.canvas)
     }

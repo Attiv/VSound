@@ -81,6 +81,8 @@ public actor CloudMusicImporter {
             .appendingPathComponent(namespace.uuidString, isDirectory: true)
             .appendingPathComponent(CloudFileNames.digest(folder.id), isDirectory: true)
         let cache = CloudFileCache(directory: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try JSONEncoder().encode(["name": "\(provider.title) · \(folder.name)"]).write(to: root.appendingPathComponent(".vsound-folder.json"), options: .atomic)
         var pending = [folder.id], visited = Set<String>(), collected = Set<String>()
         var music: [(CloudItem, CloudItem?)] = []
         while let id = pending.popLast() {

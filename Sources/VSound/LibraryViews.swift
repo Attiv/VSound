@@ -16,6 +16,7 @@ struct TrackTable: View {
                             .foregroundStyle(model.queue.currentID == track.id ? Theme.accent : Color.primary).lineLimit(1)
                         Text(track.artist).font(.system(size: 10)).foregroundStyle(Theme.muted).lineLimit(1)
                     }
+                    .draggable(track.id)
                     Spacer(minLength: 0)
                     if model.queue.currentID == track.id {
                         Image(systemName: model.player.isPlaying ? "waveform" : "pause.fill")
@@ -43,6 +44,12 @@ struct TrackTable: View {
                 Button("播放") { model.play(track, in: tracks) }
                 Button("下一首播放") { model.enqueue(track, next: true) }
                 Button("添加到队列") { model.enqueue(track, next: false) }
+                Menu("添加到歌单") {
+                    ForEach(model.playlists) { playlist in
+                        Button(playlist.name) { model.addToPlaylist(tracks.filter { ids.contains($0.id) }.map(\.id), playlistID: playlist.id) }
+                    }
+                    Button("新建歌单…", action: model.createPlaylist)
+                }
                 Divider()
                 Button(model.favorites.contains(track.id) ? "取消收藏" : "收藏") { model.toggleFavorite(track) }
                 Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([track.url]) }
@@ -55,6 +62,40 @@ struct TrackTable: View {
             model.play(track, in: tracks); return .handled
         }
         .padding(.horizontal, 15)
+    }
+}
+
+struct PlaylistTracksView: View {
+    let tracks: [Track]
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        if tracks.isEmpty {
+            ContentUnavailableView("把喜欢的歌放进来", systemImage: "music.note.list",
+                                   description: Text("在所有歌曲中右键添加到歌单，或把歌曲拖到侧栏的歌单。M3U 中未加入曲库的歌曲需要先添加音乐文件夹。"))
+        } else {
+            List {
+                ForEach(tracks) { track in
+                    HStack(spacing: 12) {
+                        CoverArt(track: track, radius: 5).frame(width: 38, height: 38)
+                        Button { model.play(track, in: tracks) } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(track.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                Text(track.artist).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                            }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        Text(MusicFormatting.time(track.duration)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                        Menu {
+                            Button("下一首播放") { model.enqueue(track, next: true) }
+                            if let index = tracks.firstIndex(where: { $0.id == track.id }) {
+                                Button("上移") { model.movePlaylistTracks(IndexSet(integer: index), to: index - 1) }.disabled(index == 0 || !model.search.isEmpty)
+                                Button("下移") { model.movePlaylistTracks(IndexSet(integer: index), to: index + 2) }.disabled(index == tracks.count - 1 || !model.search.isEmpty)
+                            }
+                            Button("从歌单移除", role: .destructive) { model.removeFromPlaylist(track) }
+                        } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("歌曲操作：\(track.title)")
+                    }.padding(.vertical, 6)
+                }.onMove(perform: model.movePlaylistTracks).moveDisabled(!model.search.isEmpty)
+            }.listStyle(.inset).scrollContentBackground(.hidden).padding(.horizontal, 15)
+        }
     }
 }
 

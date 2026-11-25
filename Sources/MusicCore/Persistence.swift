@@ -23,6 +23,9 @@ public struct LibraryState: Codable, Sendable {
     public var lyricsOffsets: [String: Double] = [:]
     public var hotKeys: [String: HotKeyBinding] = [:]
     public var hotKeysEnabled = true
+    public var playlists: [MusicPlaylist]?
+    public var preferences: PlayerPreferences?
+    public var loudnessRecords: [String: LoudnessRecord]?
     public init() {}
 }
 

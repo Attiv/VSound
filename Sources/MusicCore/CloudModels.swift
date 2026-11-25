@@ -17,7 +17,7 @@ public enum CloudProvider: String, CaseIterable, Codable, Identifiable, Sendable
     }
 }
 
-public struct CloudItem: Identifiable, Hashable, Sendable {
+public struct CloudItem: Identifiable, Codable, Hashable, Sendable {
     public var id: String
     public var name: String
     public var isFolder: Bool

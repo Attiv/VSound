@@ -67,6 +67,7 @@ struct CloudSettingsView: View {
                 Text("只请求读取和下载权限，不上传、不修改网盘文件。断开连接会移除本机令牌，已下载音乐会保留；可在网盘账户中进一步撤销应用访问。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
+            CloudManagementSections()
         }.formStyle(.grouped)
     }
 }
@@ -74,6 +75,7 @@ struct CloudSettingsView: View {
 struct CloudBrowserView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     var body: some View {
         @Bindable var cloud = model.cloud
         VStack(alignment: .leading, spacing: 0) {
@@ -85,6 +87,7 @@ struct CloudBrowserView: View {
                         Text("下载一份到本地，离线也能慢慢听。").font(.system(size: 12)).foregroundStyle(Theme.muted)
                     }
                     Spacer()
+                    Button("下载与缓存") { openWindow(id: "downloads") }.buttonStyle(.bordered)
                     Button("账号设置") { model.settingsTab = "cloud"; openSettings() }.buttonStyle(.bordered)
                 }
                 HStack(spacing: 10) {

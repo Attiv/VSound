@@ -12,11 +12,15 @@ public struct LyricsCandidate: Decodable, Identifiable, Sendable {
     public var instrumental: Bool
     public var plainLyrics: String?
     public var syncedLyrics: String?
+    public var origin: LyricSource?
+    public var remoteKey: String?
+    public var translation: String?
+    public var identity: String { "\((origin ?? .lrclib).rawValue):\(remoteKey ?? String(id))" }
     public var document: LyricsDocument? {
         let timed = syncedLyrics?.trimmingCharacters(in: .whitespacesAndNewlines)
         let plain = plainLyrics?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let text = [timed, plain].compactMap({ $0 }).first(where: { !$0.isEmpty && $0 != "null" }) else { return nil }
-        return LyricsDocument(text: text, source: "LRCLIB")
+        return LyricsDocument(text: text + ((translation?.isEmpty == false) ? "\n" + translation! : ""), source: (origin ?? .lrclib).title)
     }
 }
 
@@ -34,7 +38,9 @@ public enum LyricsError: LocalizedError {
 
 public actor LyricsClient {
     private let directory: URL
-    private let session: URLSession
+    let session: URLSession
+    var providerCooldowns: [LyricSource: Date] = [:]
+    var providerRequestTimes: [LyricSource: Date] = [:]
     public init(directory: URL, session: URLSession = .shared) { self.directory = directory; self.session = session }
 
     public static func decodeText(_ data: Data) throws -> String {
@@ -104,6 +110,7 @@ public actor LyricsClient {
     }
 
     private func request(path: String, query: [URLQueryItem]) async throws -> Data {
+        try await throttle(.lrclib)
         var components = URLComponents(string: "https://lrclib.net/api/\(path)")!
         components.queryItems = query
         var request = URLRequest(url: components.url!, timeoutInterval: 12)
@@ -114,7 +121,10 @@ public actor LyricsClient {
         switch response.statusCode {
         case 200: return data
         case 404: throw LyricsError.notFound
-        case 429: throw LyricsError.rateLimited
+        case 429:
+            let wait = Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 60
+            providerCooldowns[.lrclib] = Date().addingTimeInterval(min(86_400, max(1, wait)))
+            throw LyricsError.rateLimited
         default: throw LyricsError.server(response.statusCode)
         }
     }

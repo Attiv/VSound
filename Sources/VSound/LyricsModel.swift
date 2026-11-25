@@ -13,16 +13,23 @@ final class LyricsModel {
     var candidates: [LyricsCandidate] = []
     var searchQuery = ""
     var searchMessage: String?
+    var sources: [LyricSource] = LyricSource.allCases
+    var isResolving = false
+    var isFilling = false
+    var fillProgress = 0
+    var fillTotal = 0
+    var fillMessage: String?
     @ObservationIgnored private let client: LyricsClient
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var fillTask: Task<Void, Never>?
     @ObservationIgnored private var track: Track?
 
     init(client: LyricsClient) { self.client = client }
 
     func clear() {
         task?.cancel(); searchTask?.cancel(); track = nil
-        document = nil; candidates = []; isLoading = false; isSearching = false
+        document = nil; candidates = []; isLoading = false; isSearching = false; isResolving = false
         status = "选择一首歌，让音乐发生。"
     }
 
@@ -30,7 +37,7 @@ final class LyricsModel {
         task?.cancel(); searchTask?.cancel()
         self.track = track; document = nil; candidates = []
         searchQuery = "\(track.title) \(track.artist == "未知歌手" ? "" : track.artist)".trimmingCharacters(in: .whitespaces)
-        status = "正在寻找歌词…"; isLoading = true; isSearching = false; searchMessage = nil
+        status = "正在寻找歌词…"; isLoading = true; isSearching = false; isResolving = false; searchMessage = nil
         task = Task { [weak self, client] in
             let local = await client.localOrCached(for: track)
             guard !Task.isCancelled, let self, self.track?.id == track.id else { return }
@@ -41,9 +48,9 @@ final class LyricsModel {
                 return
             }
             do {
-                let document = try await client.fetch(for: track)
+                let document = try await client.match(for: track, sources: self.sources)
                 guard !Task.isCancelled, self.track?.id == track.id else { return }
-                self.document = document; self.status = "LRCLIB · 已缓存"
+                self.document = document; self.status = document.source + " · 已缓存"
             } catch {
                 guard !Task.isCancelled, self.track?.id == track.id else { return }
                 self.status = error.localizedDescription
@@ -59,10 +66,10 @@ final class LyricsModel {
         let query = searchQuery
         searchTask = Task { [weak self, client] in
             do {
-                let results = try await client.search(query)
+                let response = try await client.searchAll(query, sources: self?.sources ?? [.lrclib])
                 guard !Task.isCancelled, let self, self.track?.id == id else { return }
-                self.candidates = results
-                self.searchMessage = results.isEmpty ? "没有找到结果，试试更简短的歌名和歌手。" : nil
+                self.candidates = response.candidates
+                self.searchMessage = response.failures.isEmpty ? (response.candidates.isEmpty ? "没有找到结果，试试更简短的歌名和歌手。" : nil) : response.failures.joined(separator: "\n")
                 self.isSearching = false
             } catch {
                 guard !Task.isCancelled, let self, self.track?.id == id else { return }
@@ -71,10 +78,45 @@ final class LyricsModel {
         }
     }
 
-    func choose(_ candidate: LyricsCandidate) {
-        guard let document = candidate.document else { return }
-        setDocument(document)
+    func choose(_ candidate: LyricsCandidate, completion: @escaping () -> Void = {}) {
+        guard let id = track?.id else { return }
+        searchTask?.cancel(); isResolving = true; searchMessage = nil
+        searchTask = Task { [weak self, client] in
+            do {
+                let document = try await client.resolve(candidate)
+                guard !Task.isCancelled, let self, self.track?.id == id else { return }
+                self.setDocument(document); self.isResolving = false; completion()
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.searchMessage = error.localizedDescription; self?.isResolving = false
+            }
+        }
     }
+
+    func fillMissing(_ tracks: [Track]) {
+        guard !isFilling else { return }
+        let sources = sources
+        isFilling = true; fillProgress = 0; fillTotal = tracks.count; fillMessage = "正在查找缺失歌词…"
+        fillTask = Task { [weak self, client] in
+            var added = 0, missing = 0
+            defer { self?.isFilling = false }
+            do {
+                for (index, track) in tracks.enumerated() {
+                    try Task.checkCancellation()
+                    if await client.localOrCached(for: track) == nil {
+                        do { _ = try await client.match(for: track, sources: sources); added += 1 }
+                        catch is CancellationError { throw CancellationError() }
+                        catch { missing += 1 }
+                        try await Task.sleep(for: .milliseconds(400))
+                    }
+                    self?.fillProgress = index + 1
+                    self?.fillMessage = "已处理 \(index + 1)/\(tracks.count) 首，新增 \(added) 首歌词，\(missing) 首未匹配。"
+                }
+                if let self, let track = self.track { self.load(track, online: false) }
+            } catch { self?.fillMessage = "已停止补齐，已缓存的 \(added) 首歌词会保留。" }
+        }
+    }
+    func cancelFill() { fillTask?.cancel() }
 
     func importFile() {
         guard track != nil else { return }

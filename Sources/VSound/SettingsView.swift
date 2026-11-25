@@ -8,12 +8,16 @@ struct SettingsView: View {
         @Bindable var model = model
         TabView(selection: $model.settingsTab) {
             general.tabItem { Label("通用", systemImage: "gearshape") }.tag("general")
+            PlaybackSettings().tabItem { Label("播放与设备", systemImage: "hifispeaker") }.tag("playback")
+            LyricsSettings().tabItem { Label("歌词", systemImage: "text.alignleft") }.tag("lyrics")
             shortcuts.tabItem { Label("快捷键", systemImage: "keyboard") }.tag("shortcuts")
             CloudSettingsView().tabItem { Label("网盘", systemImage: "icloud") }.tag("cloud")
-        }.frame(width: 590, height: 480)
+            UpdateSettings().tabItem { Label("更新", systemImage: "arrow.down.circle") }.tag("updates")
+        }.frame(width: 680, height: 560)
     }
     private var general: some View {
-        Form {
+        @Bindable var model = model
+        return Form {
             Section("音乐曲库") {
                 LabeledContent("音乐文件夹", value: "\(model.folders.count) 个 · \(model.tracks.count) 首歌曲")
                 HStack {
@@ -22,11 +26,9 @@ struct SettingsView: View {
                 }
                 Text("曲库只建立索引，不移动、不改名、不删除你的音乐。关闭主窗口后仍可继续播放，退出应用请使用 ⌘Q。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Section("歌词") {
-                Toggle("自动联网匹配歌词", isOn: Binding(get: { model.onlineLyrics }, set: model.setOnlineLyrics))
-                Text("优先使用同目录 LRC、缓存和内嵌歌词。联网时向 LRCLIB 发送歌名、歌手、专辑和时长，不上传音频；下载后缓存在本机。")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Toggle("自动检测音乐文件夹的变化", isOn: $model.preferences.watchesFolders)
+                    .onChange(of: model.preferences.watchesFolders) { _, _ in model.configureWatcher(); model.updatePreferences() }
+                HStack { Button("新建歌单…", action: model.createPlaylist); Button("导入 M3U 歌单…", action: model.importPlaylist) }
             }
             Section("本地数据") {
                 Button("在访达中打开应用数据目录") {
@@ -36,7 +38,7 @@ struct SettingsView: View {
                         NSWorkspace.shared.open(directory)
                     } catch { model.error = error.localizedDescription }
                 }
-                LabeledContent("版本", value: "维音 · VSound 1.0.0")
+                LabeledContent("版本", value: "维音 · VSound \(model.appVersion)")
             }
         }.formStyle(.grouped)
     }

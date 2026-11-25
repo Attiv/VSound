@@ -3,7 +3,7 @@ import MusicCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum SidebarSelection: Hashable { case page(LibraryPage), folder(UUID) }
+private enum SidebarSelection: Hashable { case page(LibraryPage), folder(UUID), playlist(UUID) }
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
@@ -96,11 +96,12 @@ struct ContentView: View {
                 Spacer()
             }.padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 24)
             List(selection: Binding<SidebarSelection?>(
-                get: { model.selectedFolderID.map(SidebarSelection.folder) ?? .page(model.page) },
+                get: { model.selectedPlaylistID.map(SidebarSelection.playlist) ?? model.selectedFolderID.map(SidebarSelection.folder) ?? .page(model.page) },
                 set: { selection in
                     switch selection {
                     case .page(let page): model.navigate(page)
                     case .folder(let id): model.navigate(.songs, folderID: id)
+                    case .playlist(let id): model.selectPlaylist(id)
                     case nil: break
                     }
                 }
@@ -111,6 +112,24 @@ struct ContentView: View {
                             .font(.system(size: 13)).padding(.vertical, 6)
                             .tag(SidebarSelection.page(page))
                     }
+                }
+                Section("我的歌单") {
+                    ForEach(model.playlists) { playlist in
+                        Label(playlist.name, systemImage: "music.note.list").lineLimit(1)
+                            .tag(SidebarSelection.playlist(playlist.id)).padding(.vertical, 5)
+                            .dropDestination(for: String.self) { ids, _ in
+                                let valid = ids.filter { id in model.tracks.contains { $0.id == id } }
+                                model.addToPlaylist(valid, playlistID: playlist.id); return !valid.isEmpty
+                            }
+                            .contextMenu {
+                                Button("重命名…") { model.renamePlaylist(playlist.id) }
+                                Button("导出 M3U…") { model.selectPlaylist(playlist.id); model.exportPlaylist() }
+                                Divider()
+                                Button("删除歌单…", role: .destructive) { model.deletePlaylist(playlist.id) }
+                            }
+                    }
+                    Button(action: model.createPlaylist) { Label("新建歌单", systemImage: "plus") }.buttonStyle(.plain).padding(.vertical, 5)
+                    Button(action: model.importPlaylist) { Label("导入歌单", systemImage: "square.and.arrow.down") }.buttonStyle(.plain).padding(.vertical, 5)
                 }
                 Section("音乐文件夹") {
                     ForEach(model.folders) { folder in
@@ -159,7 +178,8 @@ struct LibraryContent: View {
         let tracks = model.visibleTracks
         VStack(alignment: .leading, spacing: 0) {
             heading(tracks)
-            if model.tracks.isEmpty { WelcomeView() }
+            if model.selectedPlaylistID != nil { PlaylistTracksView(tracks: tracks) }
+            else if model.tracks.isEmpty { WelcomeView() }
             else if tracks.isEmpty {
                 ContentUnavailableView(model.search.isEmpty ? "这里还很安静" : "没有找到歌曲",
                                        systemImage: model.search.isEmpty ? model.page.symbol : "magnifyingglass",
@@ -168,6 +188,13 @@ struct LibraryContent: View {
                 CollectionGrid(tracks: tracks, albums: model.page == .albums)
             } else {
                 TrackTable(tracks: tracks)
+            }
+            if model.lyrics.isFilling {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(model.lyrics.fillMessage ?? "正在补齐歌词…").font(.system(size: 11)).lineLimit(2)
+                    Spacer(); Button("停止", action: model.lyrics.cancelFill).buttonStyle(.plain)
+                }.padding(12).background(Theme.surface)
             }
             if model.isImporting {
                 HStack(spacing: 10) {
@@ -201,6 +228,14 @@ struct LibraryContent: View {
                         .font(.system(size: 12)).foregroundStyle(Theme.muted)
                 }
                 Spacer(minLength: 12)
+                if model.selectedPlaylistID != nil {
+                    Menu {
+                        Button("重命名…") { if let id = model.selectedPlaylistID { model.renamePlaylist(id) } }
+                        Button("导出 M3U…", action: model.exportPlaylist)
+                        Button("为歌单补齐歌词") { model.lyrics.fillMissing(tracks) }.disabled(model.lyrics.isFilling || tracks.isEmpty)
+                    } label: { Image(systemName: "ellipsis.circle").font(.system(size: 20)) }
+                        .menuStyle(.borderlessButton).fixedSize().help("歌单操作")
+                }
                 if !tracks.isEmpty {
                     Button { if let first = tracks.first { model.play(first, in: tracks) } } label: {
                         Label("播放", systemImage: "play.fill").font(.system(size: 12, weight: .semibold))
@@ -214,6 +249,7 @@ struct LibraryContent: View {
     }
 
     private func title(_ tracks: [Track]) -> String {
+        if let playlist = model.selectedPlaylist { return playlist.name }
         if let title = model.folderTitle { return title }
         if model.selectedGroup != nil, let first = tracks.first { return model.page == .albums ? first.album : first.artist }
         return model.page.title

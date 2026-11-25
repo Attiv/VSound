@@ -31,6 +31,9 @@ struct VSoundApp: App {
             CloudBrowserView().environment(model).preferredColorScheme(.dark).tint(Theme.accent)
         }
         .defaultSize(width: 900, height: 670)
+        Window("下载与缓存", id: "downloads") {
+            CloudManagementView().environment(model).preferredColorScheme(.dark).tint(Theme.accent)
+        }.defaultSize(width: 700, height: 620)
         Settings {
             SettingsView().environment(model).preferredColorScheme(.dark).tint(Theme.accent)
         }
@@ -40,18 +43,24 @@ struct VSoundApp: App {
 struct MusicCommands: Commands {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
             Button("关于维音") {
                 NSApp.orderFrontStandardAboutPanel(options: [
                     .applicationName: "维音 · VSound",
-                    .applicationVersion: "1.0.0",
-                    .credits: NSAttributedString(string: "本地音乐，恰到好处。\n歌词服务：LRCLIB\n哈曼卡顿风格预设为自主调音。")
+                    .applicationVersion: model.appVersion,
+                    .credits: NSAttributedString(string: "本地音乐，恰到好处。\n多源歌词 · 歌单 · 桌面歌词\n哈曼卡顿风格预设为自主调音。")
                 ])
             }
         }
+        CommandGroup(after: .appInfo) {
+            Button("检查更新…") { model.settingsTab = "updates"; openSettings(); model.checkForUpdates() }
+        }
         CommandGroup(after: .newItem) {
             Button("添加音乐文件夹…", action: model.chooseFolders).keyboardShortcut("o")
+            Button("新建歌单…", action: model.createPlaylist).keyboardShortcut("n")
+            Button("导入 M3U 歌单…", action: model.importPlaylist)
             Button("重新扫描曲库", action: model.refreshLibrary).keyboardShortcut("r")
                 .disabled(model.folders.isEmpty || model.isImporting)
         }
@@ -73,6 +82,13 @@ struct MusicCommands: Commands {
             Button("均衡器") { openWindow(id: "equalizer") }.keyboardShortcut("e")
             Button("迷你播放器") { openWindow(id: "mini") }.keyboardShortcut("m", modifiers: [.command, .shift])
             Button("网盘音乐") { openWindow(id: "cloud") }.keyboardShortcut("d", modifiers: [.command, .shift])
+            Button("下载与缓存") { openWindow(id: "downloads") }
+            Button(model.preferences.desktopLyrics.enabled ? "隐藏桌面歌词" : "显示桌面歌词") {
+                model.preferences.desktopLyrics.enabled.toggle(); model.updatePreferences()
+            }.keyboardShortcut("l", modifiers: [.command, .option])
+            Button(model.preferences.desktopLyrics.locked ? "解锁桌面歌词" : "锁定桌面歌词") {
+                model.preferences.desktopLyrics.locked.toggle(); model.updatePreferences()
+            }.disabled(!model.preferences.desktopLyrics.enabled)
             Button("显示 / 隐藏歌词与队列") { model.showInspector.toggle() }.keyboardShortcut("l", modifiers: [.command, .shift])
         }
     }
